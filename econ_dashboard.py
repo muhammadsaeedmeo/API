@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+import re
 
 st.set_page_config(page_title="WDI Panel Data Builder", page_icon="🌍", layout="wide")
 
@@ -15,6 +16,28 @@ if 'panel' not in st.session_state:
 if 'df_long' not in st.session_state:
     st.session_state['df_long'] = None
 
+def clean_dataframe_completely(df):
+    """
+    Comprehensive dataframe cleaning to prevent PyArrow serialization errors
+    """
+    df_clean = df.copy()
+    
+    # Replace all common non-numeric values with NaN
+    non_numeric_patterns = ['..', '', ' ', 'NaN', 'N/A', 'NULL', '-', '...', '#VALUE!', '#DIV/0!']
+    df_clean = df_clean.replace(non_numeric_patterns, np.nan)
+    
+    # Convert all potential numeric columns to numeric
+    for col in df_clean.columns:
+        # Skip if all values are NaN
+        if df_clean[col].notna().any():
+            # Try to convert to numeric, coerce errors to NaN
+            df_clean[col] = pd.to_numeric(df_clean[col], errors='ignore')
+            # If conversion resulted in object type with mixed data, force numeric
+            if df_clean[col].dtype == 'object':
+                df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce')
+    
+    return df_clean
+
 # File upload
 uploaded = st.file_uploader("Upload your WDI Excel file", type=["xlsx", "xls"])
 
@@ -23,7 +46,10 @@ if uploaded is not None:
         # Read the file
         df = pd.read_excel(uploaded)
         
-        # CRITICAL: Convert all column names to strings immediately
+        # CRITICAL: Clean the entire dataframe FIRST before any processing
+        df = clean_dataframe_completely(df)
+        
+        # Convert all column names to strings
         df.columns = [str(col).strip() for col in df.columns]
         
         st.success(f"✅ File loaded successfully! Shape: {df.shape}")
@@ -31,6 +57,8 @@ if uploaded is not None:
         # Show first few rows
         with st.expander("📋 Preview Raw Data"):
             st.dataframe(df.head(10))
+            st.write("Data types:")
+            st.write(df.dtypes)
         
         # Column selection
         st.subheader("📝 Step 1: Select Columns")
@@ -71,20 +99,19 @@ if uploaded is not None:
         st.subheader("📅 Step 2: Select Years")
         
         excluded_cols = [country_col, var_col]
-        if code_col:
+        if code_col and code_col != "None":
             excluded_cols.append(code_col)
-        if var_code_col:
+        if var_code_col and var_code_col != "None":
             excluded_cols.append(var_code_col)
         
         year_cols = []
-        import re
         for col in all_columns:
             if col not in excluded_cols:
                 # Check if column contains a 4-digit year
-                if re.search(r'\b(19|20)\d{2}\b', col):
+                if re.search(r'\b(19|20)\d{2}\b', str(col)):
                     year_cols.append(col)
                 # Or if it starts with a digit
-                elif col and col[0].isdigit():
+                elif col and str(col)[0].isdigit():
                     year_cols.append(col)
         
         if year_cols:
@@ -165,114 +192,126 @@ if uploaded is not None:
                         else:
                             # Map year columns to integers
                             year_map = {}
+                            valid_year_cols = []
                             for col in selected_years:
                                 try:
                                     # Try to extract 4-digit year
-                                    year_match = re.search(r'\b(19|20)\d{2}\b', col)
+                                    year_match = re.search(r'\b(19|20)\d{2}\b', str(col))
                                     if year_match:
                                         year_int = int(year_match.group())
                                         year_map[col] = year_int
+                                        valid_year_cols.append(col)
                                     else:
                                         # Try direct conversion
-                                        year_str = col.split()[0] if ' ' in col else col
+                                        year_str = str(col).split()[0] if ' ' in str(col) else str(col)
                                         year_int = int(year_str)
                                         year_map[col] = year_int
+                                        valid_year_cols.append(col)
                                 except Exception as e:
                                     st.warning(f"⚠️ Could not parse year from '{col}': {e}")
                             
                             if not year_map:
                                 st.error("❌ Could not parse any year columns. Please check your data format.")
                             else:
-                                # Rename year columns to integers
-                                df_renamed = df_work.rename(columns=year_map)
+                                # Ensure we only use columns that exist in dataframe
+                                valid_year_cols = [col for col in valid_year_cols if col in df_work.columns]
                                 
-                                # Prepare ID variables for melting
-                                id_vars = [country_col, var_col]
-                                if code_col:
-                                    id_vars.append(code_col)
-                                if var_code_col:
-                                    id_vars.append(var_code_col)
-                                
-                                # **CRITICAL FIX: Clean data BEFORE melting**
-                                # Replace common non-numeric values in year columns
-                                non_numeric_values = ['..', '', ' ', 'NaN', 'N/A', 'NULL', '-', '...']
-                                for year_col in year_map.values():
-                                    if year_col in df_renamed.columns:
-                                        df_renamed[year_col] = df_renamed[year_col].replace(non_numeric_values, np.nan)
-                                        # Convert to numeric, coercing errors to NaN
-                                        df_renamed[year_col] = pd.to_numeric(df_renamed[year_col], errors='coerce')
-                                
-                                # Melt to long format
-                                df_long = df_renamed.melt(
-                                    id_vars=id_vars,
-                                    value_vars=list(year_map.values()),
-                                    var_name="year",
-                                    value_name="value"
-                                )
-                                
-                                # Additional cleaning after melting
-                                df_long['value'] = df_long['value'].replace(non_numeric_values, np.nan)
-                                df_long['value'] = pd.to_numeric(df_long['value'], errors='coerce')
-                                
-                                # Count missing values
-                                missing_count = df_long['value'].isna().sum()
-                                total_count = len(df_long)
-                                
-                                # Remove missing values
-                                df_long_clean = df_long.dropna(subset=['value']).copy()
-                                
-                                if df_long_clean.empty:
-                                    st.error("❌ No valid numeric data found after cleaning. Please check your data format.")
+                                if not valid_year_cols:
+                                    st.error("❌ No valid year columns found in the data.")
                                 else:
-                                    if missing_count > 0:
-                                        st.info(f"✓ Removed {missing_count:,} missing/non-numeric values ({missing_count/total_count*100:.1f}%)")
+                                    # Rename year columns to integers
+                                    df_renamed = df_work.rename(columns=year_map)
                                     
-                                    # Rename columns to standard names
-                                    rename_dict = {
-                                        country_col: 'country',
-                                        var_col: 'variable'
-                                    }
-                                    if code_col:
-                                        rename_dict[code_col] = 'country_code'
-                                    if var_code_col:
-                                        rename_dict[var_code_col] = 'variable_code'
+                                    # Prepare ID variables for melting
+                                    id_vars = [country_col, var_col]
+                                    if code_col and code_col != "None":
+                                        id_vars.append(code_col)
+                                    if var_code_col and var_code_col != "None":
+                                        id_vars.append(var_code_col)
                                     
-                                    df_long_clean = df_long_clean.rename(columns=rename_dict)
+                                    # Ensure all ID columns exist
+                                    id_vars = [col for col in id_vars if col in df_renamed.columns]
                                     
-                                    # Ensure year is integer
-                                    df_long_clean['year'] = df_long_clean['year'].astype(int)
+                                    # CRITICAL: Convert year columns to numeric before melting
+                                    year_values = list(year_map.values())
+                                    for year_val in year_values:
+                                        if year_val in df_renamed.columns:
+                                            df_renamed[year_val] = pd.to_numeric(df_renamed[year_val], errors='coerce')
                                     
-                                    # Create country ID
-                                    unique_countries = sorted(df_long_clean['country'].astype(str).unique())
-                                    country_id_map = {c: i+1 for i, c in enumerate(unique_countries)}
-                                    df_long_clean['country_id'] = df_long_clean['country'].astype(str).map(country_id_map)
+                                    # Melt to long format
+                                    df_long = df_renamed.melt(
+                                        id_vars=id_vars,
+                                        value_vars=year_values,
+                                        var_name="year",
+                                        value_name="value"
+                                    )
                                     
-                                    # Pivot to panel format
-                                    index_cols = ['country', 'country_id', 'year']
-                                    if 'country_code' in df_long_clean.columns:
-                                        index_cols.insert(2, 'country_code')
+                                    # Final cleaning of values
+                                    df_long['value'] = pd.to_numeric(df_long['value'], errors='coerce')
                                     
-                                    # **FIX: Handle duplicate values in pivot**
-                                    panel = df_long_clean.pivot_table(
-                                        index=index_cols,
-                                        columns='variable',
-                                        values='value',
-                                        aggfunc='first'  # Use first occurrence for duplicates
-                                    ).reset_index()
+                                    # Count missing values
+                                    missing_count = df_long['value'].isna().sum()
+                                    total_count = len(df_long)
                                     
-                                    # Clean column names
-                                    panel.columns = [str(col).strip() for col in panel.columns]
+                                    # Remove missing values
+                                    df_long_clean = df_long.dropna(subset=['value']).copy()
                                     
-                                    # **FIX: Ensure all numeric columns are properly typed**
-                                    for col in panel.columns:
-                                        if col not in ['country', 'country_id', 'year', 'country_code']:
-                                            panel[col] = pd.to_numeric(panel[col], errors='coerce')
-                                    
-                                    # Store in session state
-                                    st.session_state['panel'] = panel
-                                    st.session_state['df_long'] = df_long_clean
-                                    
-                                    st.success(f"✅ Successfully formatted! Panel has {panel.shape[0]:,} rows and {panel.shape[1]} columns")
+                                    if df_long_clean.empty:
+                                        st.error("❌ No valid numeric data found after cleaning. Please check your data format.")
+                                    else:
+                                        if missing_count > 0:
+                                            st.info(f"✓ Removed {missing_count:,} missing/non-numeric values ({missing_count/total_count*100:.1f}%)")
+                                        
+                                        # Rename columns to standard names
+                                        rename_dict = {
+                                            country_col: 'country',
+                                            var_col: 'variable'
+                                        }
+                                        if code_col and code_col != "None":
+                                            rename_dict[code_col] = 'country_code'
+                                        if var_code_col and var_code_col != "None":
+                                            rename_dict[var_code_col] = 'variable_code'
+                                        
+                                        df_long_clean = df_long_clean.rename(columns=rename_dict)
+                                        
+                                        # Ensure year is integer
+                                        df_long_clean['year'] = df_long_clean['year'].astype(int)
+                                        
+                                        # Create country ID
+                                        unique_countries = sorted(df_long_clean['country'].astype(str).unique())
+                                        country_id_map = {c: i+1 for i, c in enumerate(unique_countries)}
+                                        df_long_clean['country_id'] = df_long_clean['country'].astype(str).map(country_id_map)
+                                        
+                                        # Pivot to panel format
+                                        index_cols = ['country', 'country_id', 'year']
+                                        if 'country_code' in df_long_clean.columns:
+                                            index_cols.insert(2, 'country_code')
+                                        
+                                        # Handle duplicate values in pivot
+                                        panel = df_long_clean.pivot_table(
+                                            index=index_cols,
+                                            columns='variable',
+                                            values='value',
+                                            aggfunc='first'
+                                        ).reset_index()
+                                        
+                                        # Clean column names
+                                        panel.columns = [str(col).strip() for col in panel.columns]
+                                        
+                                        # Final safety: ensure all data is Streamlit-compatible
+                                        for col in panel.columns:
+                                            if panel[col].dtype == 'object':
+                                                # Convert object columns to string to avoid PyArrow issues
+                                                panel[col] = panel[col].astype(str)
+                                            elif pd.api.types.is_numeric_dtype(panel[col]):
+                                                # Ensure numeric columns are properly typed
+                                                panel[col] = pd.to_numeric(panel[col], errors='coerce')
+                                        
+                                        # Store in session state
+                                        st.session_state['panel'] = panel
+                                        st.session_state['df_long'] = df_long_clean
+                                        
+                                        st.success(f"✅ Successfully formatted! Panel has {panel.shape[0]:,} rows and {panel.shape[1]} columns")
                         
                     except Exception as e:
                         st.error(f"❌ Error during formatting: {str(e)}")
