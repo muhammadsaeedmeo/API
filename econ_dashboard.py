@@ -1,106 +1,90 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
-from datetime import datetime
-from pandas_datareader import wb
 import requests
-import io
+import plotly.express as px
 
-st.set_page_config(page_title="Advanced Economic Data Explorer", layout="wide")
+st.set_page_config(page_title="Economic Data Dashboard", layout="wide")
 
-# ===========================================================
-#                 APP HEADER
-# ===========================================================
 st.title("📊 Advanced Economic Data Explorer")
-st.markdown("Select a data source, search variables, choose country and visualize instantly.")
 
 # ===========================================================
-#                 DATA SOURCES
+# HELPER FUNCTIONS
 # ===========================================================
-DATA_SOURCES = ["World Bank", "OECD", "IMF (IFS)", "FRED"]
 
-source = st.sidebar.selectbox("Select Data Source", DATA_SOURCES)
-
-# ===========================================================
-#          WORLD BANK FUNCTIONS
-# ===========================================================
+# ---------------- WORLD BANK ----------------
 def wb_search_indicator(keyword):
-    url = f"http://api.worldbank.org/v2/indicator?format=json&per_page=2000"
-    data = requests.get(url).json()
-    df = pd.json_normalize(data[1])
-    return df[df['name'].str.contains(keyword, case=False, na=False)][['id', 'name']]
+    url = "http://api.worldbank.org/v2/indicator?format=json&per_page=20000"
+    raw = requests.get(url).json()
+    df = pd.json_normalize(raw[1])
+    df = df[['id', 'name']]
+    return df[df['name'].str.contains(keyword, case=False, na=False)]
 
-def wb_get_data(country, indicator):
-    df = wb.download(indicator=indicator, country=country, start=1960, end=2024)
-    df = df.reset_index()
-    return df
+def wb_countries():
+    url = "http://api.worldbank.org/v2/country?format=json&per_page=400"
+    raw = requests.get(url).json()
+    df = pd.json_normalize(raw[1])
+    return df[['id', 'name']]
 
-# ===========================================================
-#          OECD FUNCTIONS
-# ===========================================================
-def oecd_search(keyword):
-    url = "https://stats.oecd.org/SDMX-JSON/dataflow/ALL/?contentType=sdmx-json"
-    data = requests.get(url).json()
-    flows = data["dataflows"]["dataflow"]
+def wb_get_data(country_code, indicator_code):
+    url = f"http://api.worldbank.org/v2/country/{country_code}/indicator/{indicator_code}?format=json&per_page=20000"
+    raw = requests.get(url).json()
 
-    results = []
-    for k, v in flows.items():
-        name = v["name"]["en"]
-        if keyword.lower() in name.lower():
-            results.append([k, name])
-    
-    return pd.DataFrame(results, columns=["Code", "Name"])
+    if len(raw) < 2:
+        return pd.DataFrame()
 
-# ===========================================================
-#          IMF FUNCTIONS
-# ===========================================================
-def imf_search(keyword):
-    url = "https://dataservices.imf.org/REST/SDMX_JSON.svc/Dataflow"
-    data = requests.get(url).json()
-    flows = data["Structure"]["Dataflows"]["Dataflow"]
+    df = pd.json_normalize(raw[1])
+    df = df[['date', 'value']]
+    df['value'] = pd.to_numeric(df['value'], errors='coerce')
+    return df.sort_values('date')
 
-    res = []
-    for f in flows:
-        code = f["@id"]
-        name = f["Name"]["#text"]
-        if keyword.lower() in name.lower():
-            res.append([code, name])
-    return pd.DataFrame(res, columns=["Code", "Name"])
 
-# ===========================================================
-#              FRED FUNCTIONS
-# ===========================================================
+# ---------------- FRED ----------------
+FRED_KEY = "ENTER_YOUR_FRED_KEY"
+
 def fred_search(keyword):
-    url = f"https://api.stlouisfed.org/fred/series/search?search_text={keyword}&api_key=YOUR_KEY&file_type=json"
-    out = requests.get(url).json()
+    url = f"https://api.stlouisfed.org/fred/series/search?search_text={keyword}&api_key={FRED_KEY}&file_type=json"
+    raw = requests.get(url).json()
 
-    if "seriess" not in out:
-        return pd.DataFrame(columns=["ID", "Title"])
+    if "seriess" not in raw:
+        return pd.DataFrame()
 
-    df = pd.json_normalize(out["seriess"])
-    return df[["id", "title"]]
+    df = pd.json_normalize(raw["seriess"])
+    return df[['id', 'title']]
 
-def fred_get(id):
-    url = f"https://api.stlouisfed.org/fred/series/observations?series_id={id}&api_key=YOUR_KEY&file_type=json"
-    data = requests.get(url).json()
-    df = pd.DataFrame(data["observations"])
-    df["value"] = pd.to_numeric(df["value"], errors="coerce")
-    return df
+def fred_get(series_id):
+    url = f"https://api.stlouisfed.org/fred/series/observations?series_id={series_id}&api_key={FRED_KEY}&file_type=json"
+    raw = requests.get(url).json()
+
+    df = pd.DataFrame(raw["observations"])
+    df['value'] = pd.to_numeric(df['value'], errors='coerce')
+    return df[['date', 'value']]
+
 
 # ===========================================================
-#                 UI PANEL
+# SIDEBAR SELECTIONS
 # ===========================================================
-keyword = st.sidebar.text_input("Search Indicator Keyword")
 
-if keyword:
+source = st.sidebar.selectbox(
+    "Select Data Source",
+    ["World Bank", "FRED"]
+)
+
+keyword = st.sidebar.text_input("Search indicator")
+run_search = st.sidebar.button("Search")
+
+
+# ===========================================================
+# SEARCH PANEL
+# ===========================================================
+
+if run_search and keyword.strip():
+
     if source == "World Bank":
         results = wb_search_indicator(keyword)
-    elif source == "OECD":
-        results = oecd_search(keyword)
-    elif source == "IMF (IFS)":
-        results = imf_search(keyword)
+
     elif source == "FRED":
         results = fred_search(keyword)
+
     else:
         results = pd.DataFrame()
 
@@ -108,35 +92,26 @@ if keyword:
     st.dataframe(results, use_container_width=True)
 
     if not results.empty:
-        selected_var = st.selectbox("Select Indicator / Series", results.iloc[:, 0])
+        selected_var = st.selectbox("Select Indicator", results.iloc[:, 0].tolist())
 
-        # COUNTRY SELECTOR FOR WB, OECD, IMF
-        if source in ["World Bank"]:
-            country = st.selectbox("Select Country", wb.get_countries().name.tolist())
+        if source == "World Bank":
+            countries = wb_countries()
+            country_name = st.selectbox("Select country", countries['name'])
+            country_code = countries[countries['name'] == country_name]['id'].values[0]
 
         if st.button("Load Data"):
+
             if source == "World Bank":
-                country_code = wb.get_countries()[wb.get_countries().name == country].iso2c.values[0]
                 df = wb_get_data(country_code, selected_var)
 
-                if df.empty:
-                    st.error("No data found.")
-                else:
-                    fig = px.line(df, x="year", y=selected_var, title=f"{selected_var} - {country}")
-                    st.plotly_chart(fig, use_container_width=True)
-
-                    csv = df.to_csv(index=False).encode()
-                    st.download_button("Download CSV", csv, "wb_data.csv")
-            
-            if source == "FRED":
+            elif source == "FRED":
                 df = fred_get(selected_var)
 
-                if df.empty:
-                    st.error("No data found.")
-                else:
-                    fig = px.line(df, x="date", y="value", title=selected_var)
-                    st.plotly_chart(fig, use_container_width=True)
+            if df.empty:
+                st.error("No data found.")
+            else:
+                fig = px.line(df, x=df.columns[0], y="value", title=selected_var)
+                st.plotly_chart(fig, use_container_width=True)
 
-                    csv = df.to_csv(index=False).encode()
-                    st.download_button("Download CSV", csv, "fred_data.csv")
-
+                csv = df.to_csv(index=False).encode()
+                st.download_button("Download CSV", csv, "data.csv")
