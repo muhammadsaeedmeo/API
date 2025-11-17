@@ -29,18 +29,24 @@ if uploaded:
     # PRE-FILTERING: Select countries and variables BEFORE formatting
     st.subheader("🔍 Filter Data Before Processing")
     
-    available_countries = df[country_col].unique()
+    # Clean and sort countries (remove NaN and convert to string)
+    available_countries = df[country_col].dropna().unique()
+    available_countries = sorted([str(c) for c in available_countries])
+    
     selected_countries_raw = st.multiselect(
         "Select countries (leave empty for all)", 
-        sorted(available_countries),
+        available_countries,
         default=None,
         help="Choose specific countries or leave empty to include all"
     )
     
-    available_variables = df[var_col].unique()
+    # Clean and sort variables (remove NaN and convert to string)
+    available_variables = df[var_col].dropna().unique()
+    available_variables = sorted([str(v) for v in available_variables])
+    
     selected_variables_raw = st.multiselect(
         "Select variables (leave empty for all)", 
-        sorted(available_variables),
+        available_variables,
         default=None,
         help="Choose specific indicators or leave empty to include all"
     )
