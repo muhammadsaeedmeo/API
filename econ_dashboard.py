@@ -193,6 +193,15 @@ if uploaded is not None:
                                 if var_code_col:
                                     id_vars.append(var_code_col)
                                 
+                                # **CRITICAL FIX: Clean data BEFORE melting**
+                                # Replace common non-numeric values in year columns
+                                non_numeric_values = ['..', '', ' ', 'NaN', 'N/A', 'NULL', '-', '...']
+                                for year_col in year_map.values():
+                                    if year_col in df_renamed.columns:
+                                        df_renamed[year_col] = df_renamed[year_col].replace(non_numeric_values, np.nan)
+                                        # Convert to numeric, coercing errors to NaN
+                                        df_renamed[year_col] = pd.to_numeric(df_renamed[year_col], errors='coerce')
+                                
                                 # Melt to long format
                                 df_long = df_renamed.melt(
                                     id_vars=id_vars,
@@ -201,8 +210,8 @@ if uploaded is not None:
                                     value_name="value"
                                 )
                                 
-                                # Clean data - CRITICAL: Handle '..' before conversion
-                                df_long['value'] = df_long['value'].replace(['..', '', ' '], np.nan)
+                                # Additional cleaning after melting
+                                df_long['value'] = df_long['value'].replace(non_numeric_values, np.nan)
                                 df_long['value'] = pd.to_numeric(df_long['value'], errors='coerce')
                                 
                                 # Count missing values
@@ -210,9 +219,9 @@ if uploaded is not None:
                                 total_count = len(df_long)
                                 
                                 # Remove missing values
-                                df_long = df_long.dropna(subset=['value'])
+                                df_long_clean = df_long.dropna(subset=['value']).copy()
                                 
-                                if df_long.empty:
+                                if df_long_clean.empty:
                                     st.error("❌ No valid numeric data found after cleaning. Please check your data format.")
                                 else:
                                     if missing_count > 0:
@@ -228,34 +237,40 @@ if uploaded is not None:
                                     if var_code_col:
                                         rename_dict[var_code_col] = 'variable_code'
                                     
-                                    df_long = df_long.rename(columns=rename_dict)
+                                    df_long_clean = df_long_clean.rename(columns=rename_dict)
                                     
                                     # Ensure year is integer
-                                    df_long['year'] = df_long['year'].astype(int)
+                                    df_long_clean['year'] = df_long_clean['year'].astype(int)
                                     
                                     # Create country ID
-                                    unique_countries = sorted(df_long['country'].astype(str).unique())
+                                    unique_countries = sorted(df_long_clean['country'].astype(str).unique())
                                     country_id_map = {c: i+1 for i, c in enumerate(unique_countries)}
-                                    df_long['country_id'] = df_long['country'].astype(str).map(country_id_map)
+                                    df_long_clean['country_id'] = df_long_clean['country'].astype(str).map(country_id_map)
                                     
                                     # Pivot to panel format
                                     index_cols = ['country', 'country_id', 'year']
-                                    if code_col:
+                                    if 'country_code' in df_long_clean.columns:
                                         index_cols.insert(2, 'country_code')
                                     
-                                    panel = df_long.pivot_table(
+                                    # **FIX: Handle duplicate values in pivot**
+                                    panel = df_long_clean.pivot_table(
                                         index=index_cols,
                                         columns='variable',
                                         values='value',
-                                        aggfunc='first'
+                                        aggfunc='first'  # Use first occurrence for duplicates
                                     ).reset_index()
                                     
                                     # Clean column names
                                     panel.columns = [str(col).strip() for col in panel.columns]
                                     
+                                    # **FIX: Ensure all numeric columns are properly typed**
+                                    for col in panel.columns:
+                                        if col not in ['country', 'country_id', 'year', 'country_code']:
+                                            panel[col] = pd.to_numeric(panel[col], errors='coerce')
+                                    
                                     # Store in session state
                                     st.session_state['panel'] = panel
-                                    st.session_state['df_long'] = df_long
+                                    st.session_state['df_long'] = df_long_clean
                                     
                                     st.success(f"✅ Successfully formatted! Panel has {panel.shape[0]:,} rows and {panel.shape[1]} columns")
                         
