@@ -1,7 +1,4 @@
-streamlit>=1.20
-pandas>=1.5
-requests>=2.28
-plotly>=5.0
-numpy>=1.23
-xlsxwriter>=3.0
-openpyxl>=3.0
+streamlit
+pandas
+numpy
+openpyxl
