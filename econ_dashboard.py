@@ -1,247 +1,292 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')  # Set backend before importing pyplot
 import matplotlib.pyplot as plt
 
-st.title("Advanced WDI Formatter and Panel Builder")
+st.title("🌍 WDI Panel Data Builder")
 
-uploaded = st.file_uploader("Upload WDI Excel file", type=["xlsx", "xls"])
+# File upload
+uploaded = st.file_uploader("Upload your WDI Excel file", type=["xlsx", "xls"])
 
-if uploaded:
-    df = pd.read_excel(uploaded)
-    
-    st.subheader("Raw Columns")
-    st.write(df.columns.tolist())
-    
-    # METADATA SELECTION
-    country_col = st.selectbox("Country column", df.columns)
-    code_col = st.selectbox("Country code column (optional)", ["None"] + list(df.columns))
-    code_col = None if code_col == "None" else code_col
-    
-    var_col = st.selectbox("Variable name column", df.columns)
-    var_code_col = st.selectbox("Variable code column (optional)", ["None"] + list(df.columns))
-    var_code_col = None if var_code_col == "None" else var_code_col
-    
-    # YEAR detection - handle both string and numeric columns
-    year_cols = []
-    for c in df.columns:
-        try:
-            c_str = str(c)
-            if c_str.split()[0].isdigit():
-                year_cols.append(c)
-        except:
-            pass
-    
-    selected_years = st.multiselect("Select years", year_cols, default=year_cols)
-    
-    # PRE-FILTERING: Select countries and variables BEFORE formatting
-    st.subheader("🔍 Filter Data Before Processing")
-    
-    # Clean and sort countries (remove NaN, convert to string, handle mixed types)
+if uploaded is not None:
     try:
-        available_countries = df[country_col].dropna().unique()
-        available_countries = sorted([str(c) for c in available_countries])
-    except Exception as e:
-        st.error(f"Error processing countries: {e}")
-        available_countries = [str(c) for c in df[country_col].dropna().unique()]
-    
-    selected_countries_raw = st.multiselect(
-        "Select countries (leave empty for all)", 
-        available_countries,
-        default=None,
-        help="Choose specific countries or leave empty to include all"
-    )
-    
-    # Clean and sort variables (remove NaN, convert to string, handle mixed types)
-    try:
-        available_variables = df[var_col].dropna().unique()
-        available_variables = sorted([str(v) for v in available_variables])
-    except Exception as e:
-        st.error(f"Error processing variables: {e}")
-        available_variables = [str(v) for v in df[var_col].dropna().unique()]
-    
-    selected_variables_raw = st.multiselect(
-        "Select variables (leave empty for all)", 
-        available_variables,
-        default=None,
-        help="Choose specific indicators or leave empty to include all"
-    )
-    
-    if st.button("Format Data"):
-        try:
-            # Apply filters if any selected
-            df_filtered = df.copy()
-            
-            if selected_countries_raw:
-                # Convert to string for comparison
-                df_filtered[country_col] = df_filtered[country_col].astype(str)
-                df_filtered = df_filtered[df_filtered[country_col].isin(selected_countries_raw)]
-                st.info(f"✅ Filtered to {len(selected_countries_raw)} countries")
-            else:
-                st.info(f"✅ Including all {len(available_countries)} countries")
-                
-            if selected_variables_raw:
-                # Convert to string for comparison
-                df_filtered[var_col] = df_filtered[var_col].astype(str)
-                df_filtered = df_filtered[df_filtered[var_col].isin(selected_variables_raw)]
-                st.info(f"✅ Filtered to {len(selected_variables_raw)} variables")
-            else:
-                st.info(f"✅ Including all {len(available_variables)} variables")
-            
-            # Clean years - handle both string and numeric column names
-            clean_year_map = {}
-            for c in selected_years:
-                try:
-                    year_int = int(str(c).split()[0])
-                    clean_year_map[c] = year_int
-                except:
-                    st.warning(f"Could not parse year from column: {c}")
-            
-            df_clean = df_filtered.rename(columns=clean_year_map)
-            
-            # Melt to long
-            id_vars = [country_col, var_col]
-            if code_col and code_col in df_clean.columns:
-                id_vars.append(code_col)
-            if var_code_col and var_code_col in df_clean.columns:
-                id_vars.append(var_code_col)
-                
-            long_df = df_clean.melt(
-                id_vars=id_vars,
-                value_vars=list(clean_year_map.values()),
-                var_name="year",
-                value_name="value"
-            ).dropna(subset=["value"])
-            
-            # Rename columns
-            long_df = long_df.rename(columns={
-                country_col: "country",
-                var_col: "variable"
-            })
-            
-            if code_col and code_col in long_df.columns:
-                long_df = long_df.rename(columns={code_col: "country_code"})
-            if var_code_col and var_code_col in long_df.columns:
-                long_df = long_df.rename(columns={var_code_col: "variable_code"})
-                
-            long_df["year"] = long_df["year"].astype(int)
-            
-            # Convert value to numeric, replacing '..' and other non-numeric values with NaN
-            long_df["value"] = pd.to_numeric(long_df["value"], errors='coerce')
-            long_df = long_df.dropna(subset=["value"])
-            
-            # CREATE NUMERIC COUNTRY ID
-            unique_countries = long_df["country"].unique()
-            country_map = {c: i+1 for i, c in enumerate(sorted(unique_countries))}
-            long_df["country_id"] = long_df["country"].map(country_map)
-            
-            # PIVOT: ONE ROW = COUNTRY-YEAR WITH MULTIPLE VARIABLES
-            panel = long_df.pivot_table(
-                index=["country", "country_id", "year"],
-                columns="variable",
-                values="value",
-                aggfunc='first'  # Handle duplicates
-            ).reset_index()
-            
-            # Store in session state for persistence
-            st.session_state['panel'] = panel
-            
-            st.success("✅ Data formatted successfully!")
-            
-        except Exception as e:
-            st.error(f"Error formatting data: {e}")
-            st.error("Please check your column selections and try again.")
+        # Read the file
+        df = pd.read_excel(uploaded)
         
-# Display results if panel exists in session state
+        st.success(f"✅ File loaded successfully! Shape: {df.shape}")
+        
+        # Show first few rows
+        with st.expander("📋 Preview Raw Data"):
+            st.dataframe(df.head())
+        
+        # Column selection
+        st.subheader("📝 Step 1: Select Columns")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            country_col = st.selectbox(
+                "Country column",
+                options=df.columns.tolist(),
+                help="Column containing country names"
+            )
+        
+        with col2:
+            var_col = st.selectbox(
+                "Variable/Indicator column",
+                options=df.columns.tolist(),
+                help="Column containing variable names"
+            )
+        
+        # Optional columns
+        with st.expander("⚙️ Optional: Select Code Columns"):
+            col3, col4 = st.columns(2)
+            with col3:
+                code_col_options = ["None"] + df.columns.tolist()
+                code_col = st.selectbox("Country code column", code_col_options)
+                code_col = None if code_col == "None" else code_col
+            
+            with col4:
+                var_code_col = st.selectbox("Variable code column", code_col_options)
+                var_code_col = None if var_code_col == "None" else var_code_col
+        
+        # Detect year columns
+        st.subheader("📅 Step 2: Select Years")
+        year_cols = []
+        for col in df.columns:
+            col_str = str(col)
+            # Check if column name starts with digits (year)
+            if col_str and col_str[0].isdigit():
+                year_cols.append(col)
+        
+        if year_cols:
+            selected_years = st.multiselect(
+                "Select year columns to include",
+                options=year_cols,
+                default=year_cols,
+                help="Choose which years to include in your panel"
+            )
+        else:
+            st.warning("⚠️ No year columns detected. Looking for columns starting with digits (e.g., '1990', '2000')")
+            selected_years = []
+        
+        # Filtering options
+        st.subheader("🔍 Step 3: Filter Data (Optional)")
+        
+        # Get unique values safely
+        try:
+            countries_raw = df[country_col].dropna().astype(str).unique().tolist()
+            countries_sorted = sorted(countries_raw)
+        except:
+            countries_sorted = df[country_col].dropna().astype(str).tolist()
+        
+        try:
+            variables_raw = df[var_col].dropna().astype(str).unique().tolist()
+            variables_sorted = sorted(variables_raw)
+        except:
+            variables_sorted = df[var_col].dropna().astype(str).tolist()
+        
+        col5, col6 = st.columns(2)
+        
+        with col5:
+            selected_countries = st.multiselect(
+                "Select specific countries",
+                options=countries_sorted,
+                default=None,
+                help="Leave empty to include all countries"
+            )
+        
+        with col6:
+            selected_variables = st.multiselect(
+                "Select specific variables",
+                options=variables_sorted,
+                default=None,
+                help="Leave empty to include all variables"
+            )
+        
+        # Format button
+        if st.button("🚀 Format Data", type="primary"):
+            if not selected_years:
+                st.error("❌ Please select at least one year column")
+            else:
+                with st.spinner("Processing data..."):
+                    try:
+                        # Filter data
+                        df_work = df.copy()
+                        
+                        if selected_countries:
+                            df_work = df_work[df_work[country_col].astype(str).isin(selected_countries)]
+                            st.info(f"✓ Filtered to {len(selected_countries)} countries")
+                        
+                        if selected_variables:
+                            df_work = df_work[df_work[var_col].astype(str).isin(selected_variables)]
+                            st.info(f"✓ Filtered to {len(selected_variables)} variables")
+                        
+                        # Map year columns to integers
+                        year_map = {}
+                        for col in selected_years:
+                            try:
+                                # Extract year from column name
+                                year_str = str(col).split()[0]
+                                year_int = int(year_str)
+                                year_map[col] = year_int
+                            except:
+                                st.warning(f"Could not parse year from: {col}")
+                        
+                        # Rename year columns
+                        df_renamed = df_work.rename(columns=year_map)
+                        
+                        # Prepare ID variables for melting
+                        id_vars = [country_col, var_col]
+                        if code_col:
+                            id_vars.append(code_col)
+                        if var_code_col:
+                            id_vars.append(var_code_col)
+                        
+                        # Melt to long format
+                        df_long = df_renamed.melt(
+                            id_vars=id_vars,
+                            value_vars=list(year_map.values()),
+                            var_name="year",
+                            value_name="value"
+                        )
+                        
+                        # Clean data
+                        # Convert value to numeric (handles '..' and other non-numeric)
+                        df_long['value'] = pd.to_numeric(df_long['value'], errors='coerce')
+                        df_long = df_long.dropna(subset=['value'])
+                        
+                        # Rename columns to standard names
+                        rename_dict = {
+                            country_col: 'country',
+                            var_col: 'variable'
+                        }
+                        if code_col:
+                            rename_dict[code_col] = 'country_code'
+                        if var_code_col:
+                            rename_dict[var_code_col] = 'variable_code'
+                        
+                        df_long = df_long.rename(columns=rename_dict)
+                        
+                        # Ensure year is integer
+                        df_long['year'] = df_long['year'].astype(int)
+                        
+                        # Create country ID
+                        unique_countries = sorted(df_long['country'].unique())
+                        country_id_map = {c: i+1 for i, c in enumerate(unique_countries)}
+                        df_long['country_id'] = df_long['country'].map(country_id_map)
+                        
+                        # Pivot to panel format (one row per country-year)
+                        panel = df_long.pivot_table(
+                            index=['country', 'country_id', 'year'],
+                            columns='variable',
+                            values='value',
+                            aggfunc='first'
+                        ).reset_index()
+                        
+                        # Store in session state
+                        st.session_state['panel'] = panel
+                        st.session_state['df_long'] = df_long
+                        
+                        st.success(f"✅ Successfully formatted! Panel has {panel.shape[0]} rows and {panel.shape[1]} columns")
+                        
+                    except Exception as e:
+                        st.error(f"❌ Error during formatting: {str(e)}")
+                        st.exception(e)
+        
+    except Exception as e:
+        st.error(f"❌ Error loading file: {str(e)}")
+        st.exception(e)
+
+# Display results if available
 if 'panel' in st.session_state:
     panel = st.session_state['panel']
     
-    st.subheader("📊 Structured Panel Data")
-    st.write(f"Shape: {panel.shape[0]} rows × {panel.shape[1]} columns")
+    st.divider()
+    st.subheader("📊 Formatted Panel Data")
     
-    # Display with better error handling for Arrow conversion issues
-    try:
-        st.dataframe(panel.head(30))
-    except Exception as e:
-        st.warning("Display issue with dataframe. Showing as text instead.")
-        st.text(panel.head(30).to_string())
+    st.write(f"**Shape:** {panel.shape[0]} rows × {panel.shape[1]} columns")
     
-    # VISUALIZATION SECTION
-    st.subheader("📈 Visualization Options")
+    # Show data
+    with st.expander("👁️ View Panel Data", expanded=True):
+        st.dataframe(panel, use_container_width=True, height=400)
     
-    countries = sorted([str(c) for c in panel["country"].unique()])
-    variables = [v for v in panel.columns if v not in ["country", "country_id", "year"]]
+    # Visualization
+    st.divider()
+    st.subheader("📈 Visualize Data")
     
-    col1, col2 = st.columns(2)
+    countries = sorted(panel['country'].unique())
+    variables = [col for col in panel.columns if col not in ['country', 'country_id', 'year']]
     
-    with col1:
+    col7, col8 = st.columns(2)
+    
+    with col7:
         viz_countries = st.multiselect(
-            "Select countries to visualize", 
-            countries, 
-            default=countries[0:min(3, len(countries))],
+            "Countries to plot",
+            options=countries,
+            default=countries[:min(3, len(countries))],
             key="viz_countries"
         )
     
-    with col2:
+    with col8:
         viz_vars = st.multiselect(
-            "Select variables to plot", 
-            variables, 
-            default=variables[0:min(2, len(variables))],
+            "Variables to plot",
+            options=variables,
+            default=variables[:min(2, len(variables))],
             key="viz_vars"
         )
     
     if viz_countries and viz_vars:
-        # FILTER for visualization
-        df_viz = panel[panel["country"].isin(viz_countries)]
+        # Filter and plot
+        df_plot = panel[panel['country'].isin(viz_countries)]
         
-        st.subheader("🔍 Filtered Data for Visualization")
-        try:
-            st.dataframe(df_viz)
-        except:
-            st.text(df_viz.to_string())
-        
-        # PLOT
         for country in viz_countries:
-            sub = df_viz[df_viz["country"] == country]
-            if not sub.empty:
-                fig, ax = plt.subplots(figsize=(10, 6))
-                for v in viz_vars:
-                    if v in sub.columns and sub[v].notna().any():
-                        ax.plot(sub["year"], sub[v], marker='o', label=v, linewidth=2)
-                ax.set_title(f"Time Series for {country}", fontsize=14, fontweight='bold')
-                ax.set_xlabel("Year")
-                ax.set_ylabel("Value")
+            df_country = df_plot[df_plot['country'] == country].sort_values('year')
+            
+            if not df_country.empty:
+                fig, ax = plt.subplots(figsize=(10, 5))
+                
+                for var in viz_vars:
+                    if var in df_country.columns:
+                        ax.plot(df_country['year'], df_country[var], 
+                               marker='o', label=var, linewidth=2)
+                
+                ax.set_title(f"{country}", fontsize=14, fontweight='bold')
+                ax.set_xlabel("Year", fontsize=12)
+                ax.set_ylabel("Value", fontsize=12)
                 ax.legend()
                 ax.grid(True, alpha=0.3)
                 plt.tight_layout()
+                
                 st.pyplot(fig)
                 plt.close(fig)
-    elif not viz_countries:
-        st.warning("⚠️ Please select at least one country to visualize")
-    elif not viz_vars:
-        st.warning("⚠️ Please select at least one variable to visualize")
     
-    # DOWNLOAD OPTIONS
-    st.subheader("💾 Download Options")
+    # Download section
+    st.divider()
+    st.subheader("💾 Download Data")
     
-    col1, col2 = st.columns(2)
+    col9, col10 = st.columns(2)
     
-    with col1:
-        csv_full = panel.to_csv(index=False)
+    with col9:
+        csv = panel.to_csv(index=False).encode('utf-8')
         st.download_button(
-            "📥 Download Full Panel (CSV)",
-            csv_full,
-            file_name="panel_data_full.csv",
-            mime="text/csv"
+            label="📥 Download Full Panel (CSV)",
+            data=csv,
+            file_name="wdi_panel_full.csv",
+            mime="text/csv",
+            use_container_width=True
         )
     
-    with col2:
-        if viz_countries and viz_vars:
-            filtered_panel = panel[panel["country"].isin(viz_countries)]
-            csv_filtered = filtered_panel.to_csv(index=False)
+    with col10:
+        if viz_countries:
+            filtered = panel[panel['country'].isin(viz_countries)]
+            csv_filtered = filtered.to_csv(index=False).encode('utf-8')
             st.download_button(
-                "📥 Download Filtered Panel (CSV)",
-                csv_filtered,
-                file_name="panel_data_filtered.csv",
-                mime="text/csv"
+                label="📥 Download Filtered Panel (CSV)",
+                data=csv_filtered,
+                file_name="wdi_panel_filtered.csv",
+                mime="text/csv",
+                use_container_width=True
             )
