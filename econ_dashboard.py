@@ -4,7 +4,6 @@ import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-import io
 
 st.set_page_config(page_title="WDI Panel Data Builder", page_icon="🌍", layout="wide")
 
@@ -23,6 +22,9 @@ if uploaded is not None:
     try:
         # Read the file
         df = pd.read_excel(uploaded)
+        
+        # Convert all column names to strings to avoid comparison issues
+        df.columns = [str(col) for col in df.columns]
         
         st.success(f"✅ File loaded successfully! Shape: {df.shape}")
         
@@ -100,20 +102,20 @@ if uploaded is not None:
         # Filtering options
         st.subheader("🔍 Step 3: Filter Data (Optional)")
         
-        # Get unique values safely
+        # Get unique values safely - convert to string and remove NaN
         try:
             countries_raw = df[country_col].dropna().astype(str).unique().tolist()
-            countries_sorted = sorted([c for c in countries_raw if c and c.strip()])
+            countries_sorted = sorted([c for c in countries_raw if c and c.strip() and c != 'nan'])
         except Exception as e:
             st.warning(f"Could not sort countries: {e}")
-            countries_sorted = df[country_col].dropna().astype(str).tolist()
+            countries_sorted = []
         
         try:
             variables_raw = df[var_col].dropna().astype(str).unique().tolist()
-            variables_sorted = sorted([v for v in variables_raw if v and v.strip()])
+            variables_sorted = sorted([v for v in variables_raw if v and v.strip() and v != 'nan'])
         except Exception as e:
             st.warning(f"Could not sort variables: {e}")
-            variables_sorted = df[var_col].dropna().astype(str).tolist()
+            variables_sorted = []
         
         col5, col6 = st.columns(2)
         
@@ -156,12 +158,12 @@ if uploaded is not None:
                         else:
                             # Map year columns to integers
                             year_map = {}
+                            import re
                             for col in selected_years:
                                 try:
                                     # Extract year from column name
                                     col_str = str(col).strip()
                                     # Try to extract 4-digit year
-                                    import re
                                     year_match = re.search(r'(19|20)\d{2}', col_str)
                                     if year_match:
                                         year_int = int(year_match.group())
@@ -170,85 +172,99 @@ if uploaded is not None:
                                         year_int = int(col_str.split()[0])
                                     year_map[col] = year_int
                                 except Exception as e:
-                                    st.warning(f"Could not parse year from: {col}. Using column as-is.")
-                                    year_map[col] = col
+                                    st.warning(f"Could not parse year from: {col}. Skipping this column.")
                             
-                            # Rename year columns
-                            df_renamed = df_work.rename(columns=year_map)
-                            
-                            # Prepare ID variables for melting
-                            id_vars = [country_col, var_col]
-                            if code_col:
-                                id_vars.append(code_col)
-                            if var_code_col:
-                                id_vars.append(var_code_col)
-                            
-                            # Melt to long format
-                            df_long = df_renamed.melt(
-                                id_vars=id_vars,
-                                value_vars=list(year_map.values()),
-                                var_name="year",
-                                value_name="value"
-                            )
-                            
-                            # Clean data
-                            # Convert value to numeric (handles '..' and other non-numeric)
-                            df_long['value'] = pd.to_numeric(df_long['value'], errors='coerce')
-                            
-                            # Count missing values before dropping
-                            missing_count = df_long['value'].isna().sum()
-                            total_count = len(df_long)
-                            
-                            df_long = df_long.dropna(subset=['value'])
-                            
-                            if df_long.empty:
-                                st.error("❌ No valid numeric data found after cleaning. Please check your data format.")
+                            if not year_map:
+                                st.error("❌ Could not parse any year columns. Please check your data format.")
                             else:
-                                st.info(f"✓ Removed {missing_count} missing/non-numeric values ({missing_count/total_count*100:.1f}%)")
+                                # Rename year columns
+                                df_renamed = df_work.rename(columns=year_map)
                                 
-                                # Rename columns to standard names
-                                rename_dict = {
-                                    country_col: 'country',
-                                    var_col: 'variable'
-                                }
+                                # Prepare ID variables for melting
+                                id_vars = [country_col, var_col]
                                 if code_col:
-                                    rename_dict[code_col] = 'country_code'
+                                    id_vars.append(code_col)
                                 if var_code_col:
-                                    rename_dict[var_code_col] = 'variable_code'
+                                    id_vars.append(var_code_col)
                                 
-                                df_long = df_long.rename(columns=rename_dict)
+                                # Melt to long format
+                                df_long = df_renamed.melt(
+                                    id_vars=id_vars,
+                                    value_vars=list(year_map.values()),
+                                    var_name="year",
+                                    value_name="value"
+                                )
                                 
-                                # Ensure year is integer (if possible)
-                                try:
-                                    df_long['year'] = df_long['year'].astype(int)
-                                except:
-                                    st.warning("⚠️ Year column could not be converted to integer. Keeping as-is.")
+                                # Clean data - handle '..' and other non-numeric values
+                                # First, replace '..' with NaN
+                                df_long['value'] = df_long['value'].replace('..', np.nan)
+                                df_long['value'] = df_long['value'].replace('', np.nan)
                                 
-                                # Create country ID
-                                unique_countries = sorted(df_long['country'].unique())
-                                country_id_map = {c: i+1 for i, c in enumerate(unique_countries)}
-                                df_long['country_id'] = df_long['country'].map(country_id_map)
+                                # Convert value to numeric
+                                df_long['value'] = pd.to_numeric(df_long['value'], errors='coerce')
                                 
-                                # Pivot to panel format (one row per country-year)
-                                index_cols = ['country', 'country_id', 'year']
-                                if code_col:
-                                    index_cols.insert(2, 'country_code')
+                                # Count missing values before dropping
+                                missing_count = df_long['value'].isna().sum()
+                                total_count = len(df_long)
                                 
-                                panel = df_long.pivot_table(
-                                    index=index_cols,
-                                    columns='variable',
-                                    values='value',
-                                    aggfunc='first'
-                                ).reset_index()
+                                df_long = df_long.dropna(subset=['value'])
                                 
-                                # Clean column names (remove any special characters)
-                                panel.columns = [str(col).strip() for col in panel.columns]
-                                
-                                # Store in session state
-                                st.session_state['panel'] = panel
-                                st.session_state['df_long'] = df_long
-                                
-                                st.success(f"✅ Successfully formatted! Panel has {panel.shape[0]} rows and {panel.shape[1]} columns")
+                                if df_long.empty:
+                                    st.error("❌ No valid numeric data found after cleaning. Please check your data format.")
+                                else:
+                                    st.info(f"✓ Removed {missing_count} missing/non-numeric values ({missing_count/total_count*100:.1f}%)")
+                                    
+                                    # Rename columns to standard names
+                                    rename_dict = {
+                                        country_col: 'country',
+                                        var_col: 'variable'
+                                    }
+                                    if code_col:
+                                        rename_dict[code_col] = 'country_code'
+                                    if var_code_col:
+                                        rename_dict[var_code_col] = 'variable_code'
+                                    
+                                    df_long = df_long.rename(columns=rename_dict)
+                                    
+                                    # Ensure year is integer
+                                    try:
+                                        df_long['year'] = df_long['year'].astype(int)
+                                    except:
+                                        st.warning("⚠️ Year column could not be converted to integer. Keeping as-is.")
+                                    
+                                    # Create country ID
+                                    unique_countries = sorted(df_long['country'].astype(str).unique())
+                                    country_id_map = {c: i+1 for i, c in enumerate(unique_countries)}
+                                    df_long['country_id'] = df_long['country'].astype(str).map(country_id_map)
+                                    
+                                    # Pivot to panel format (one row per country-year)
+                                    index_cols = ['country', 'country_id', 'year']
+                                    if code_col:
+                                        index_cols.insert(2, 'country_code')
+                                    
+                                    panel = df_long.pivot_table(
+                                        index=index_cols,
+                                        columns='variable',
+                                        values='value',
+                                        aggfunc='first'
+                                    ).reset_index()
+                                    
+                                    # Clean column names (remove any special characters)
+                                    panel.columns = [str(col).strip() for col in panel.columns]
+                                    
+                                    # Convert all string columns to avoid Arrow serialization issues
+                                    for col in panel.columns:
+                                        if panel[col].dtype == 'object':
+                                            try:
+                                                panel[col] = panel[col].astype(str)
+                                            except:
+                                                pass
+                                    
+                                    # Store in session state
+                                    st.session_state['panel'] = panel
+                                    st.session_state['df_long'] = df_long
+                                    
+                                    st.success(f"✅ Successfully formatted! Panel has {panel.shape[0]} rows and {panel.shape[1]} columns")
                         
                     except Exception as e:
                         st.error(f"❌ Error during formatting: {str(e)}")
@@ -275,16 +291,23 @@ if st.session_state.get('panel') is not None:
         if numeric_cols:
             st.dataframe(panel[numeric_cols].describe())
     
-    # Show data
+    # Show data - convert to avoid Arrow issues
     with st.expander("👁️ View Panel Data", expanded=True):
-        st.dataframe(panel, use_container_width=True, height=400)
+        # Create a copy for display to avoid Arrow serialization issues
+        display_panel = panel.copy()
+        st.dataframe(display_panel, use_container_width=True, height=400)
     
     # Visualization
     st.divider()
     st.subheader("📈 Visualize Data")
     
-    countries = sorted(panel['country'].unique())
-    variables = [col for col in panel.columns if col not in ['country', 'country_id', 'year', 'country_code']]
+    try:
+        countries = sorted([str(c) for c in panel['country'].unique()])
+        variables = [col for col in panel.columns if col not in ['country', 'country_id', 'year', 'country_code']]
+    except Exception as e:
+        st.error(f"Error preparing visualization options: {e}")
+        countries = []
+        variables = []
     
     if not variables:
         st.warning("⚠️ No variables available for plotting")
@@ -309,10 +332,10 @@ if st.session_state.get('panel') is not None:
         
         if viz_countries and viz_vars:
             # Filter and plot
-            df_plot = panel[panel['country'].isin(viz_countries)].copy()
+            df_plot = panel[panel['country'].astype(str).isin(viz_countries)].copy()
             
             for country in viz_countries:
-                df_country = df_plot[df_plot['country'] == country].sort_values('year')
+                df_country = df_plot[df_plot['country'].astype(str) == country].sort_values('year')
                 
                 if not df_country.empty:
                     fig, ax = plt.subplots(figsize=(10, 5))
@@ -355,7 +378,7 @@ if st.session_state.get('panel') is not None:
     
     with col10:
         if 'viz_countries' in st.session_state and st.session_state.viz_countries:
-            filtered = panel[panel['country'].isin(st.session_state.viz_countries)]
+            filtered = panel[panel['country'].astype(str).isin(st.session_state.viz_countries)]
             csv_filtered = filtered.to_csv(index=False).encode('utf-8')
             st.download_button(
                 label="📥 Download Filtered Panel (CSV)",
@@ -389,4 +412,4 @@ else:
 
 # Footer
 st.divider()
-st.caption("Built with Streamlit • WDI Panel Data Builder v2.0")
+st.caption("Built with Streamlit • WDI Panel Data Builder v2.1")
