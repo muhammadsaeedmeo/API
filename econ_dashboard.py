@@ -21,17 +21,6 @@ def denton_diff(low):
     res = minimize(obj, x0, method='SLSQP', constraints=cons, options={'ftol': 1e-9})
     return pd.Series(res.x, index=tgt_idx, name=low.name)
 
-def chow_lin(low, indicator):
-    from statsmodels.regression.linear_model import OLS
-    df = pd.concat([low, indicator], axis=1, join='inner').dropna()
-    y_d, x_d = df.iloc[:, 0], df.iloc[:, 1]
-    model = OLS(y_d, x_d.resample('Y').sum())
-    res = model.fit()
-    high = res.predict(x_d)
-    annual_hat = high.resample('Y').sum()
-    adj = (y_d / annual_hat).reindex(high.index, method='ffill')
-    return high * adj
-
 # ---------- 1. LOAD ----------
 st.set_page_config(page_title="WDI batch processor", layout="wide")
 st.title("WDI ➜ tidy panel + batch interpolate / frequency / log")
@@ -78,8 +67,11 @@ with st.sidebar:
     method_i  = st.selectbox("Interpolation", ["linear", "cubic", "pchip", "akima"])
 
 # ---------- 4. PIPELINE (COUNTRY-WISE) ----------
-proc_cols = []
-note_list = []
+note_parts = []
+if do_interp: note_parts.append(f"interpolated({method_i})")
+if do_freq:   note_parts.append("freq→monthly")
+if do_log:    note_parts.append("logged")
+note_str = " → ".join(note_parts) if note_parts else "no processing"
 
 def country_pipe(g):
     g = g.copy().set_index("year")
@@ -88,6 +80,9 @@ def country_pipe(g):
         if do_interp and s.isna().any():
             s = s.interpolate(method=method_i)
         if do_freq:
+            s = s.dropna()
+            if s.empty: continue
+            s.index = pd.to_datetime(s.index, format='%Y')   # FIX: DatetimeIndex
             s = denton_diff(s.asfreq('Y'))
         if do_log:
             s = np.log(s)
@@ -95,30 +90,21 @@ def country_pipe(g):
     return g.reset_index()
 
 if any([do_interp, do_freq, do_log]):
-    note_parts = []
-    if do_interp: note_parts.append(f"interpolated({method_i})")
-    if do_freq:   note_parts.append("freq→monthly")
-    if do_log:    note_parts.append("logged")
-    note_str = " → ".join(note_parts)
     st.info(f"Pipeline: {note_str}  (country-specific)")
-
     processed = []
     for cty in sel_cty:
         sub = panel.query("`Country Name` == @cty")
         if sub.empty: continue
-        out = country_pipe(sub)
-        out["Country Name"] = cty
-        processed.append(out)
+        processed.append(country_pipe(sub))
     panel_proc = pd.concat(processed, ignore_index=True) if processed else panel
 else:
     panel_proc = panel
-    note_str = "no processing"
 
 # ---------- 5. BEFORE / AFTER WORLD CHART ----------
 if any([do_interp, do_freq, do_log]) and not panel_proc.empty:
     st.subheader("World aggregate: before vs after")
-    bef_world = (panel.groupby("year")[sel_ind].mean())
-    aft_world = (panel_proc.groupby("year")[sel_ind].mean())
+    bef_world = panel.groupby("year")[sel_ind].mean()
+    aft_world = panel_proc.groupby("year")[sel_ind].mean()
     fig = go.Figure()
     for ind in sel_ind[:3]:
         fig.add_scatter(x=bef_world.index, y=bef_world[ind], name=f"{ind} (before)", mode="markers")
