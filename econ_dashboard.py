@@ -65,3 +65,41 @@ st.download_button(
         file_name=f"wdi_panel_{y0}_{y1}.csv",
         mime="text/csv"
 )
+# ---------- 7. INTERPOLATION SECTION ----------
+if not panel.empty:
+    with st.expander("3. Interpolate missing values"):
+        # choose one indicator that has NaNs
+        cand = [c for c in panel.columns
+                if panel[c].isna().any() and pd.api.types.is_numeric_dtype(panel[c])]
+        if not cand:
+            st.info("No missing numeric data in the selected slice.")
+        else:
+            indict = st.selectbox("Indicator to interpolate", cand)
+            method = st.selectbox("Method",
+                                  ["linear", "cubic", "pchip", "akima"],
+                                  help="PCHIP = shape-preserving, no overshoot")
+
+            # split by first country for demo chart
+            demo_country = panel["Country Name"].iloc[0]
+            ser = (panel.query("`Country Name` == @demo_country")
+                        .set_index("year")[indict])
+            ser_int = ser.interpolate(method=method)
+
+            pct = 100 * ser.isna().mean()
+            st.write(f"Missing values: **{pct:.1f} %**  ({ser.isna().sum()} / {len(ser)})")
+
+            chart_df = pd.concat({"original": ser, "interpolated": ser_int}, axis=1)
+            st.line_chart(chart_df)
+
+            # add interpolated column to the full panel
+            new_col = f"{indict}_{method}"
+            panel[new_col] = (panel.groupby("Country Name")[indict]
+                                   .transform(lambda s: s.interpolate(method=method)))
+
+            csv_int = panel.to_csv(index=False)
+            st.download_button(
+                    label=f"Download panel + {new_col}",
+                    data=csv_int,
+                    file_name=f"wdi_panel_{y0}_{y1}_{method}.csv",
+                    mime="text/csv"
+            )
