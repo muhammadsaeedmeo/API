@@ -75,6 +75,7 @@ note_str = " → ".join(note_parts) if note_parts else "no processing"
 # ---------- 4. PIPELINE (COUNTRY-WISE) ----------
 def country_pipe(g):
     g = g.copy().set_index("year")
+    new_frames = []          # monthly frames go here
     for col in sel_ind:
         s = g[col].copy()
         if do_interp and s.isna().any():
@@ -84,11 +85,20 @@ def country_pipe(g):
             if s.empty or len(s) < 2:        # skip too-short
                 continue
             s.index = pd.to_datetime(s.index, format='%Y')
-            s = denton_diff(s.asfreq('Y'))
+            monthly = denton_diff(s)         # monthly DatetimeIndex
+            df_m = monthly.to_frame(name=col).reset_index()
+            df_m["Country Name"] = g["Country Name"].iloc[0]
+            df_m = df_m.rename(columns={"index": "date"})
+            new_frames.append(df_m)
+            continue                         # skip old annual frame for this indicator
         if do_log:
             s = np.log(s)
         g[col] = s
-    return g.reset_index()
+    # no freq conversion → return original shape
+    if not new_frames:
+        return g.reset_index()
+    # else: concat all monthly frames
+    return pd.concat(new_frames, ignore_index=True)
 
 if any([do_interp, do_freq, do_log]):
     st.info(f"Pipeline: {note_str}  (country-specific)")
@@ -109,8 +119,10 @@ else:
 # ---------- 5. BEFORE / AFTER WORLD CHART ----------
 if any([do_interp, do_freq, do_log]) and not panel_proc.empty:
     st.subheader("World aggregate: before vs after")
-    bef_world = panel.groupby("year")[sel_ind].mean()
-    aft_world = panel_proc.groupby("year")[sel_ind].mean()
+    # choose correct index name
+    idx_col = "date" if do_freq else "year"
+    bef_world = (panel.groupby("year")[sel_ind].mean())
+    aft_world = (panel_proc.groupby(idx_col)[sel_ind].mean())
     fig = go.Figure()
     for ind in sel_ind[:3]:
         fig.add_scatter(x=bef_world.index, y=bef_world[ind], name=f"{ind} (before)", mode="markers")
