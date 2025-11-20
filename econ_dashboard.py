@@ -1,7 +1,3 @@
-
---------------------------------------------------
-app.py  (whole file)
-------------------------------------------------```python
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -82,10 +78,9 @@ with st.sidebar:
     method_i  = st.selectbox("Interpolation", ["linear", "cubic", "pchip", "akima"])
 
 # ---------- 4. PIPELINE (COUNTRY-WISE) ----------
-proc_cols = []  # new column names
+proc_cols = []
 note_list = []
 
-# helper: country-wise apply func
 def country_pipe(g):
     g = g.copy().set_index("year")
     for col in sel_ind:
@@ -93,7 +88,7 @@ def country_pipe(g):
         if do_interp and s.isna().any():
             s = s.interpolate(method=method_i)
         if do_freq:
-            s = denton_diff(s.asfreq('Y'))  # monthly
+            s = denton_diff(s.asfreq('Y'))
         if do_log:
             s = np.log(s)
         g[col] = s
@@ -125,7 +120,7 @@ if any([do_interp, do_freq, do_log]) and not panel_proc.empty:
     bef_world = (panel.groupby("year")[sel_ind].mean())
     aft_world = (panel_proc.groupby("year")[sel_ind].mean())
     fig = go.Figure()
-    for ind in sel_ind[:3]:  # show first 3 only for clarity
+    for ind in sel_ind[:3]:
         fig.add_scatter(x=bef_world.index, y=bef_world[ind], name=f"{ind} (before)", mode="markers")
         fig.add_scatter(x=aft_world.index, y=aft_world[ind], name=f"{ind} (after)",  mode="lines")
     st.plotly_chart(fig, use_container_width=True)
