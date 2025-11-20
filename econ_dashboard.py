@@ -66,13 +66,13 @@ with st.sidebar:
     do_log    = st.checkbox("Natural log",        value=False)
     method_i  = st.selectbox("Interpolation", ["linear", "cubic", "pchip", "akima"])
 
-# ---------- 4. PIPELINE (COUNTRY-WISE) ----------
 note_parts = []
 if do_interp: note_parts.append(f"interpolated({method_i})")
 if do_freq:   note_parts.append("freq→monthly")
 if do_log:    note_parts.append("logged")
 note_str = " → ".join(note_parts) if note_parts else "no processing"
 
+# ---------- 4. PIPELINE (COUNTRY-WISE) ----------
 def country_pipe(g):
     g = g.copy().set_index("year")
     for col in sel_ind:
@@ -81,7 +81,7 @@ def country_pipe(g):
             s = s.interpolate(method=method_i)
         if do_freq:
             s = s.dropna()
-            if s.empty or len(s) < 2:          # ← guard: need ≥2 years
+            if s.empty or len(s) < 2:        # skip too-short
                 continue
             s.index = pd.to_datetime(s.index, format='%Y')
             s = denton_diff(s.asfreq('Y'))
@@ -92,14 +92,20 @@ def country_pipe(g):
 
 if any([do_interp, do_freq, do_log]):
     st.info(f"Pipeline: {note_str}  (country-specific)")
-    processed = []
+    processed, skipped = [], []
     for cty in sel_cty:
         sub = panel.query("`Country Name` == @cty")
         if sub.empty: continue
-        processed.append(country_pipe(sub))
+        try:
+            processed.append(country_pipe(sub))
+        except ValueError:
+            skipped.append(cty)
+    if skipped:
+        st.warning("Skipped countries (need ≥2 yrs for freq): " + ", ".join(skipped))
     panel_proc = pd.concat(processed, ignore_index=True) if processed else panel
 else:
     panel_proc = panel
+
 # ---------- 5. BEFORE / AFTER WORLD CHART ----------
 if any([do_interp, do_freq, do_log]) and not panel_proc.empty:
     st.subheader("World aggregate: before vs after")
