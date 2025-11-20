@@ -20,9 +20,10 @@ tidy      = (wide
                    var_name="year_raw",
                    value_name="value")
              .assign(year=lambda d: pd.to_numeric(d["year_raw"].str[:4], errors="coerce"))
+             # --- coerce value to numeric, turn ".." into NaN ---
+             .assign(value=lambda d: pd.to_numeric(d["value"], errors="coerce"))
              .drop(columns=["year_raw"])
-             .dropna(subset=["year", "value"]))
-
+             .dropna(subset=["year", "value"]))   # drops NaN years & missing values
 # ---------- 3. META ----------
 countries   = tidy["Country Name"].unique()
 indicators  = tidy["Series Name"].unique()
