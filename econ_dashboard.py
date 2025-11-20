@@ -1,3 +1,7 @@
+
+--------------------------------------------------
+app.py  (whole file)
+------------------------------------------------```python
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -21,7 +25,7 @@ def denton_diff(low):
     res = minimize(obj, x0, method='SLSQP', constraints=cons, options={'ftol': 1e-9})
     return pd.Series(res.x, index=tgt_idx, name=low.name)
 
-def chow_lin(low, indicator, ar1=0.9):
+def chow_lin(low, indicator):
     from statsmodels.regression.linear_model import OLS
     df = pd.concat([low, indicator], axis=1, join='inner').dropna()
     y_d, x_d = df.iloc[:, 0], df.iloc[:, 1]
@@ -33,8 +37,8 @@ def chow_lin(low, indicator, ar1=0.9):
     return high * adj
 
 # ---------- 1. LOAD ----------
-st.set_page_config(page_title="WDI → Tidy Panel", layout="wide")
-st.title("WDI wide export ➜ tidy panel + interpolate + frequency + log")
+st.set_page_config(page_title="WDI batch processor", layout="wide")
+st.title("WDI ➜ tidy panel + batch interpolate / frequency / log")
 
 uploaded = st.file_uploader("1. Upload WDI wide CSV", type="csv")
 if uploaded is None: st.stop()
@@ -52,14 +56,14 @@ tidy = (wide
 
 countries, indicators = tidy["Country Name"].unique(), tidy["Series Name"].unique()
 y0, y1 = int(tidy["year"].min()), int(tidy["year"].max())
-st.markdown(f"**Countries**: {len(countries)} | **Indicators**: {len(indicators)} | **Years**: {y0}–{y1}")
+st.markdown(f"**Countries** : {len(countries)}  |  **Indicators** : {len(indicators)}  |  **Years** : {y0}–{y1}")
 
-# ---------- 2. FILTER ----------
+# ---------- 2. FILTER (ALL-AT-ONCE) ----------
 with st.sidebar:
     years = sorted(tidy["year"].unique())
     y0, y1 = st.select_slider("Year range", options=years, value=(y0, y1))
-    sel_ind = st.multiselect("Indicators", indicators, default=indicators[:3])
-    sel_cty = st.multiselect("Countries", sorted(countries), default=sorted(countries)[:10])
+    sel_ind = st.multiselect("Indicators", indicators, default=indicators)
+    sel_cty = st.multiselect("Countries", sorted(countries), default=sorted(countries))
 
 panel = (tidy
          .loc[tidy["year"].between(y0, y1)]
@@ -69,74 +73,68 @@ panel = (tidy
                       columns="Series Name", values="value")
          .reset_index())
 
-# ---------- 3. DOWNLOAD RAW ----------
-csv_raw = panel.to_csv(index=False)
-st.download_button("2. Download raw panel", csv_raw,
-                   file_name=f"wdi_raw_{y0}_{y1}.csv", mime="text/csv")
+# ---------- 3. GLOBAL TOGGLES ----------
+with st.sidebar:
+    st.subheader("Processing pipeline")
+    do_interp = st.checkbox("Interpolate missing", value=False)
+    do_freq   = st.checkbox("Annual → monthly",   value=False)
+    do_log    = st.checkbox("Natural log",        value=False)
+    method_i  = st.selectbox("Interpolation", ["linear", "cubic", "pchip", "akima"])
 
-# ---------- 4. POST-PROCESS ----------
-with st.expander("4. Post-process (interpolate → frequency → log)"):
-    st.info("Order: interpolate missing → frequency conversion → natural log. Any step can be disabled.")
-    proc_note = []
+# ---------- 4. PIPELINE (COUNTRY-WISE) ----------
+proc_cols = []  # new column names
+note_list = []
 
-    demo_ind = st.selectbox("Demo indicator", panel.columns[2:])
-    demo_country = st.selectbox("Demo country", panel["Country Name"].unique())
+# helper: country-wise apply func
+def country_pipe(g):
+    g = g.copy().set_index("year")
+    for col in sel_ind:
+        s = g[col].copy()
+        if do_interp and s.isna().any():
+            s = s.interpolate(method=method_i)
+        if do_freq:
+            s = denton_diff(s.asfreq('Y'))  # monthly
+        if do_log:
+            s = np.log(s)
+        g[col] = s
+    return g.reset_index()
 
-    # --- 4a. INTERPOLATE ---
-    do_interp = st.checkbox("Interpolate missing values", value=False)
-    if do_interp:
-        method_i = st.selectbox("Interpolation method", ["linear", "cubic", "pchip", "akima"])
-        proc_note.append(f"interpolated ({method_i})")
+if any([do_interp, do_freq, do_log]):
+    note_parts = []
+    if do_interp: note_parts.append(f"interpolated({method_i})")
+    if do_freq:   note_parts.append("freq→monthly")
+    if do_log:    note_parts.append("logged")
+    note_str = " → ".join(note_parts)
+    st.info(f"Pipeline: {note_str}  (country-specific)")
 
-        @st.cache_data
-        def interp(panel, m):
-            return panel.groupby("Country Name").apply(
-                lambda g: g.set_index("year")[demo_ind].interpolate(method=m)).reset_index()
+    processed = []
+    for cty in sel_cty:
+        sub = panel.query("`Country Name` == @cty")
+        if sub.empty: continue
+        out = country_pipe(sub)
+        out["Country Name"] = cty
+        processed.append(out)
+    panel_proc = pd.concat(processed, ignore_index=True) if processed else panel
+else:
+    panel_proc = panel
+    note_str = "no processing"
 
-        panel_int = interp(panel, method_i)
-        bef = panel.query("`Country Name`==@demo_country").set_index("year")[demo_ind]
-        aft = panel_int.query("`Country Name`==@demo_country").set_index("year")[demo_ind]
-        fig = go.Figure()
-        fig.add_scatter(x=bef.index, y=bef, name="before", mode="markers+lines")
-        fig.add_scatter(x=aft.index, y=aft, name="after",  mode="lines")
-        st.plotly_chart(fig, use_container_width=True)
-        panel = panel_int
+# ---------- 5. BEFORE / AFTER WORLD CHART ----------
+if any([do_interp, do_freq, do_log]) and not panel_proc.empty:
+    st.subheader("World aggregate: before vs after")
+    bef_world = (panel.groupby("year")[sel_ind].mean())
+    aft_world = (panel_proc.groupby("year")[sel_ind].mean())
+    fig = go.Figure()
+    for ind in sel_ind[:3]:  # show first 3 only for clarity
+        fig.add_scatter(x=bef_world.index, y=bef_world[ind], name=f"{ind} (before)", mode="markers")
+        fig.add_scatter(x=aft_world.index, y=aft_world[ind], name=f"{ind} (after)",  mode="lines")
+    st.plotly_chart(fig, use_container_width=True)
 
-    # --- 4b. FREQUENCY CONVERSION ---
-    do_freq = st.checkbox("Convert annual → monthly", value=False)
-    if do_freq:
-        proc_note.append("frequency→monthly (Denton-diff, country-wise)")
-        ann = (panel.query("`Country Name`==@demo_country")
-                    .set_index("year")[demo_ind].dropna().asfreq('Y'))
-        if ann.empty: st.warning("No annual data for demo"); st.stop()
-        monthly = denton_diff(ann)
-        fig = go.Figure()
-        fig.add_scatter(x=ann.index, y=ann, name="annual", mode="markers")
-        fig.add_scatter(x=monthly.index, y=monthly, name="monthly", mode="lines")
-        st.plotly_chart(fig, use_container_width=True)
-        out_frames = []
-        for cty in panel["Country Name"].unique():
-            sub = panel.query("`Country Name`==@cty").set_index("year")[demo_ind].dropna().asfreq('Y')
-            if sub.empty: continue
-            mth = denton_diff(sub)
-            df_m = mth.to_frame(name=demo_ind).reset_index()
-            df_m["Country Name"] = cty
-            out_frames.append(df_m)
-        panel = pd.concat(out_frames, ignore_index=True)
-
-    # --- 4c. LOG TRANSFORM ---
-    do_log = st.checkbox("Take natural log", value=False)
-    if do_log:
-        proc_note.append("logged")
-        panel[demo_ind] = np.log(panel[demo_ind])
-        st.write("Natural log applied.")
-
-    # ---------- 5. FINAL DOWNLOAD ----------
-    note = " → ".join(["raw"] + proc_note) if proc_note else "no processing"
-    csv_final = panel.to_csv(index=False)
-    st.download_button(
-            label=f"5. Download processed panel ({note})",
-            data=csv_final,
-            file_name=f"wdi_processed_{y0}_{y1}.csv",
-            mime="text/csv"
-    )
+# ---------- 6. DOWNLOAD ----------
+csv_final = panel_proc.to_csv(index=False)
+st.download_button(
+        label=f"Download processed panel ({note_str})",
+        data=csv_final,
+        file_name=f"wdi_processed_{y0}_{y1}.csv",
+        mime="text/csv"
+)
