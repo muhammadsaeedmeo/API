@@ -1,7 +1,3 @@
-
---------------------------------------------------
-app.py  (replaces your old file)
-------------------------------------------------```python
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -17,11 +13,9 @@ def _denton_mat(n_high, n_low):
     return coo_matrix((np.ones(n_high), (rows, cols)), shape=(n_low, n_high)).toarray()
 
 def denton_diff(low):
-    """low: annual Series (year-index) -> monthly whose annual sums = low"""
     tgt_idx = pd.date_range(low.index[0], low.index[-1] + pd.offsets.YearEnd(), freq='M')
     A = _denton_mat(len(tgt_idx), len(low))
     x0 = np.repeat(low.values, 12)
-
     def obj(x): return np.sum(np.diff(x)**2)
     cons = {'type': 'eq', 'fun': lambda x: A @ x - low.values}
     res = minimize(obj, x0, method='SLSQP', constraints=cons, options={'ftol': 1e-9})
@@ -29,15 +23,11 @@ def denton_diff(low):
 
 def chow_lin(low, indicator, ar1=0.9):
     from statsmodels.regression.linear_model import OLS
-    # align to indicator frequency
     df = pd.concat([low, indicator], axis=1, join='inner').dropna()
-    y_d = df.iloc[:, 0]
-    x_d = df.iloc[:, 1]
-    # simple Chow-Lin: regress annual sums, then blow up
+    y_d, x_d = df.iloc[:, 0], df.iloc[:, 1]
     model = OLS(y_d, x_d.resample('Y').sum())
     res = model.fit()
     high = res.predict(x_d)
-    # proportional adjustment to hit annual totals
     annual_hat = high.resample('Y').sum()
     adj = (y_d / annual_hat).reindex(high.index, method='ffill')
     return high * adj
@@ -87,9 +77,8 @@ st.download_button("2. Download raw panel", csv_raw,
 # ---------- 4. POST-PROCESS ----------
 with st.expander("4. Post-process (interpolate → frequency → log)"):
     st.info("Order: interpolate missing → frequency conversion → natural log. Any step can be disabled.")
-    proc_note = []  # pipeline note
+    proc_note = []
 
-    # pick one indicator for demo charts
     demo_ind = st.selectbox("Demo indicator", panel.columns[2:])
     demo_country = st.selectbox("Demo country", panel["Country Name"].unique())
 
@@ -105,30 +94,26 @@ with st.expander("4. Post-process (interpolate → frequency → log)"):
                 lambda g: g.set_index("year")[demo_ind].interpolate(method=m)).reset_index()
 
         panel_int = interp(panel, method_i)
-        # before/after chart
         bef = panel.query("`Country Name`==@demo_country").set_index("year")[demo_ind]
         aft = panel_int.query("`Country Name`==@demo_country").set_index("year")[demo_ind]
         fig = go.Figure()
         fig.add_scatter(x=bef.index, y=bef, name="before", mode="markers+lines")
         fig.add_scatter(x=aft.index, y=aft, name="after",  mode="lines")
         st.plotly_chart(fig, use_container_width=True)
-        panel = panel_int  # overwrite
+        panel = panel_int
 
-    # --- 4b. FREQUENCY CONVERSION (annual → monthly) ---
+    # --- 4b. FREQUENCY CONVERSION ---
     do_freq = st.checkbox("Convert annual → monthly", value=False)
     if do_freq:
         proc_note.append("frequency→monthly (Denton-diff, country-wise)")
-        # helper: annual series for chosen country+indicator
         ann = (panel.query("`Country Name`==@demo_country")
                     .set_index("year")[demo_ind].dropna().asfreq('Y'))
-        if ann.empty: st.warning("No annual data for demo country"); st.stop()
+        if ann.empty: st.warning("No annual data for demo"); st.stop()
         monthly = denton_diff(ann)
         fig = go.Figure()
         fig.add_scatter(x=ann.index, y=ann, name="annual", mode="markers")
         fig.add_scatter(x=monthly.index, y=monthly, name="monthly", mode="lines")
         st.plotly_chart(fig, use_container_width=True)
-
-        # apply to whole panel (country-wise)
         out_frames = []
         for cty in panel["Country Name"].unique():
             sub = panel.query("`Country Name`==@cty").set_index("year")[demo_ind].dropna().asfreq('Y')
