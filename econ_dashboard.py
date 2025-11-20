@@ -81,8 +81,9 @@ def country_pipe(g):
             s = s.interpolate(method=method_i)
         if do_freq:
             s = s.dropna()
-            if s.empty: continue
-            s.index = pd.to_datetime(s.index, format='%Y')   # FIX: DatetimeIndex
+            if s.empty or len(s) < 2:          # ← guard: need ≥2 years
+                continue
+            s.index = pd.to_datetime(s.index, format='%Y')
             s = denton_diff(s.asfreq('Y'))
         if do_log:
             s = np.log(s)
@@ -99,7 +100,6 @@ if any([do_interp, do_freq, do_log]):
     panel_proc = pd.concat(processed, ignore_index=True) if processed else panel
 else:
     panel_proc = panel
-
 # ---------- 5. BEFORE / AFTER WORLD CHART ----------
 if any([do_interp, do_freq, do_log]) and not panel_proc.empty:
     st.subheader("World aggregate: before vs after")
