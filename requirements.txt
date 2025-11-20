@@ -1,4 +1,5 @@
 streamlit>=1.29
-pandas>=2.2,<3
-statsmodels>=0.14   # Chow-Lin
-scipy>=1.11          # Denton
+pandas>=2.2
+scipy>=1.11
+statsmodels>=0.14
+plotly>=5.17
